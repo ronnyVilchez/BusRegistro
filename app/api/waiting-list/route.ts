@@ -8,6 +8,8 @@ import {
 } from '@/lib/kv';
 import { getSession } from '@/lib/auth';
 
+export const dynamic = 'force-dynamic';
+
 export async function GET() {
   try {
     const isAuthenticated = await getSession();
