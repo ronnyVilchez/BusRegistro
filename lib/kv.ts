@@ -203,8 +203,11 @@ export async function findNextEligible(availableSeats: number): Promise<WaitingL
   return null;
 }
 
-// Contar asientos disponibles
-export async function countAvailableSeats(): Promise<number> {
-  const seats = await getSeats();
-  return seats.filter(s => s.status === 'free').length;
+// Contar asientos disponibles (optimizado - acepta asientos ya cargados)
+export async function countAvailableSeats(seats?: Seat[]): Promise<number> {
+  if (seats) {
+    return seats.filter(s => s.status === 'free').length;
+  }
+  const allSeats = await getSeats();
+  return allSeats.filter(s => s.status === 'free').length;
 }

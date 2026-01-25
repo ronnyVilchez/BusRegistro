@@ -12,7 +12,7 @@ export async function GET() {
     }
 
     const seats = await getSeats();
-    const available = await countAvailableSeats();
+    const available = await countAvailableSeats(seats); // Pasar seats para evitar GET duplicado
     
     return NextResponse.json({ 
       seats,
@@ -56,7 +56,7 @@ export async function PUT(request: NextRequest) {
     }
 
     const seats = await updateSeat(seat, data);
-    const available = await countAvailableSeats();
+    const available = await countAvailableSeats(seats); // Pasar seats para evitar GET duplicado
 
     return NextResponse.json({ 
       seats,

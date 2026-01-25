@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { 
+  getSeats,
   getWaitingList, 
   addToWaitingList, 
   removeFromWaitingList,
@@ -18,7 +19,8 @@ export async function GET() {
     }
 
     const list = await getWaitingList();
-    const available = await countAvailableSeats();
+    const seats = await getSeats(); // Una sola lectura
+    const available = await countAvailableSeats(seats);
     const nextEligible = await findNextEligible(available);
 
     return NextResponse.json({ 
@@ -65,7 +67,8 @@ export async function POST(request: NextRequest) {
       requestedSeats: Number(requestedSeats),
     });
 
-    const available = await countAvailableSeats();
+    const seats = await getSeats(); // Una sola lectura
+    const available = await countAvailableSeats(seats);
     const nextEligible = await findNextEligible(available);
 
     return NextResponse.json({ 
@@ -100,7 +103,8 @@ export async function DELETE(request: NextRequest) {
     }
 
     const list = await removeFromWaitingList(id);
-    const available = await countAvailableSeats();
+    const seats = await getSeats(); // Una sola lectura
+    const available = await countAvailableSeats(seats);
     const nextEligible = await findNextEligible(available);
 
     return NextResponse.json({ 
