@@ -27,6 +27,9 @@ let memoryStore: Map<string, any> = new Map();
 // Cache de URLs de blobs para evitar múltiples búsquedas
 const blobUrlCache: Map<string, string> = new Map();
 
+// Lock para prevenir race conditions en escrituras
+const writeLocks: Map<string, Promise<void>> = new Map();
+
 // Función helper para obtener el cliente de almacenamiento
 // Usa Vercel Blob Storage (nativo) si está disponible
 // Si no, usa almacenamiento en memoria (para desarrollo local)
@@ -39,17 +42,39 @@ async function getStorage() {
     return {
       get: async <T>(key: string): Promise<T | null> => {
         try {
+          // Intentar usar cache primero
+          const cachedUrl = blobUrlCache.get(key);
+          if (cachedUrl) {
+            try {
+              const response = await fetch(cachedUrl, { 
+                cache: 'no-store',
+                headers: { 'Cache-Control': 'no-cache' }
+              });
+              if (response.ok) {
+                const text = await response.text();
+                return JSON.parse(text) as T;
+              }
+            } catch (e) {
+              // Si falla, limpiar cache y buscar de nuevo
+              blobUrlCache.delete(key);
+            }
+          }
+          
           // Buscar el blob por nombre
           const blobs = await list({ 
             prefix: key,
             token: process.env.BLOB_READ_WRITE_TOKEN,
+            limit: 1,
           });
           
           const blob = blobs.blobs.find(b => b.pathname === key);
           
           if (blob) {
             // Leer desde la URL del blob
-            const response = await fetch(blob.url);
+            const response = await fetch(blob.url, {
+              cache: 'no-store',
+              headers: { 'Cache-Control': 'no-cache' }
+            });
             if (response.ok) {
               const text = await response.text();
               blobUrlCache.set(key, blob.url);
@@ -66,36 +91,45 @@ async function getStorage() {
         }
       },
       set: async (key: string, value: any): Promise<void> => {
-        try {
-          const jsonString = JSON.stringify(value);
-          
-          // Eliminar blob anterior si existe
+        // Prevenir escrituras concurrentes para la misma clave
+        const existingLock = writeLocks.get(key);
+        if (existingLock) {
+          await existingLock;
+        }
+        
+        const writePromise = (async () => {
           try {
-            const blobs = await list({ 
-              prefix: key,
+            const jsonString = JSON.stringify(value);
+            
+            // Usar put con overwrite - esto es más eficiente que delete + put
+            const blob = await put(key, jsonString, {
+              access: 'public',
               token: process.env.BLOB_READ_WRITE_TOKEN,
+              contentType: 'application/json',
+              addRandomSuffix: false,
             });
-            const existingBlob = blobs.blobs.find(b => b.pathname === key);
-            if (existingBlob) {
-              await del(existingBlob.url, { token: process.env.BLOB_READ_WRITE_TOKEN });
-            }
-          } catch (e) {
-            // Ignorar si no existe
+            
+            // Actualizar cache inmediatamente
+            blobUrlCache.set(key, blob.url);
+            
+            // También guardar en memoria como backup
+            memoryStore.set(key, value);
+          } catch (error) {
+            console.error('Error escribiendo a Blob Storage:', error);
+            // Fallback a memoria si falla
+            memoryStore.set(key, value);
+            // Limpiar cache si falla
+            blobUrlCache.delete(key);
+            throw error;
           }
-          
-          // Crear nuevo blob
-          const blob = await put(key, jsonString, {
-            access: 'public',
-            token: process.env.BLOB_READ_WRITE_TOKEN,
-            contentType: 'application/json',
-            addRandomSuffix: false,
-          });
-          
-          blobUrlCache.set(key, blob.url);
-        } catch (error) {
-          console.error('Error escribiendo a Blob Storage:', error);
-          // Fallback a memoria si falla
-          memoryStore.set(key, value);
+        })();
+        
+        writeLocks.set(key, writePromise);
+        
+        try {
+          await writePromise;
+        } finally {
+          writeLocks.delete(key);
         }
       },
     };
@@ -142,33 +176,54 @@ export async function getSeats(): Promise<Seat[]> {
   return seats || await initializeSeats();
 }
 
-// Actualizar un asiento
+// Actualizar un asiento con retry para manejar concurrencia
 export async function updateSeat(seatNumber: number, data: Partial<Seat>): Promise<Seat[]> {
   const storage = await getStorage();
-  const seats = await getSeats();
-  const index = seatNumber - 1;
+  const maxRetries = 3;
+  let retries = 0;
+  
+  while (retries < maxRetries) {
+    try {
+      // Leer datos frescos cada vez
+      const seats = await storage.get<Seat[]>(SEATS_KEY) || await initializeSeats();
+      const index = seatNumber - 1;
 
-  if (index < 0 || index >= seats.length) {
-    throw new Error('Asiento inválido');
+      if (index < 0 || index >= seats.length) {
+        throw new Error('Asiento inválido');
+      }
+
+      const updatedSeat: Seat = {
+        ...seats[index],
+        ...data,
+        seat: seatNumber,
+      };
+
+      // Si se libera el asiento, limpiar todos los campos
+      if (data.status === 'free') {
+        updatedSeat.name = null;
+        updatedSeat.lastname = null;
+        updatedSeat.age = null;
+        updatedSeat.paid = false;
+      }
+
+      seats[index] = updatedSeat;
+      
+      // Escribir inmediatamente
+      await storage.set(SEATS_KEY, seats);
+      
+      return seats;
+    } catch (error) {
+      retries++;
+      if (retries >= maxRetries) {
+        console.error('Error actualizando asiento después de reintentos:', error);
+        throw error;
+      }
+      // Esperar un poco antes de reintentar
+      await new Promise(resolve => setTimeout(resolve, 100 * retries));
+    }
   }
-
-  const updatedSeat: Seat = {
-    ...seats[index],
-    ...data,
-    seat: seatNumber,
-  };
-
-  // Si se libera el asiento, limpiar todos los campos
-  if (data.status === 'free') {
-    updatedSeat.name = null;
-    updatedSeat.lastname = null;
-    updatedSeat.age = null;
-    updatedSeat.paid = false;
-  }
-
-  seats[index] = updatedSeat;
-  await storage.set(SEATS_KEY, seats);
-  return seats;
+  
+  throw new Error('Error al actualizar asiento');
 }
 
 // Obtener lista de espera
