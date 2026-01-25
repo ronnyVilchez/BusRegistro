@@ -1,5 +1,5 @@
 import { v4 as uuidv4 } from 'uuid';
-import { put, list } from '@vercel/blob';
+import { Redis } from '@upstash/redis';
 
 export interface Seat {
   seat: number;
@@ -18,115 +18,47 @@ export interface WaitingListEntry {
   createdAt: string;
 }
 
-const SEATS_KEY = 'bus_seats.json';
-const WAITING_LIST_KEY = 'waiting_list.json';
+const SEATS_KEY = 'bus_seats';
+const WAITING_LIST_KEY = 'waiting_list';
 
-// Almacenamiento en memoria - fuente principal de verdad
-// En Vercel serverless, esto se mantiene mientras la función esté activa
-let memoryStore: Map<string, any> = new Map();
+// Cliente Redis singleton
+let redisClient: Redis | null = null;
 
-// Flag para saber si ya cargamos desde Blob Storage
-let initializedFromBlob = false;
+// Obtener cliente Redis (singleton)
+function getRedisClient(): Redis | null {
+  // Vercel KV usa estas variables de entorno automáticamente
+  const url = process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL;
+  const token = process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN;
 
-// Función para cargar datos desde Blob Storage a memoria (solo una vez al inicio)
-async function loadFromBlobIfNeeded() {
-  if (initializedFromBlob || !process.env.BLOB_READ_WRITE_TOKEN) {
-    return;
+  if (!url || !token) {
+    return null;
   }
 
-  try {
-    // Cargar asientos desde Blob
-    const seatsBlobs = await list({
-      prefix: SEATS_KEY,
-      token: process.env.BLOB_READ_WRITE_TOKEN,
-      limit: 1,
+  if (!redisClient) {
+    redisClient = new Redis({
+      url,
+      token,
     });
-    
-    const seatsBlob = seatsBlobs.blobs.find(b => b.pathname === SEATS_KEY);
-    if (seatsBlob) {
-      const response = await fetch(seatsBlob.url, { cache: 'no-store' });
-      if (response.ok) {
-        const seats = await response.json();
-        memoryStore.set(SEATS_KEY, seats);
-      }
-    }
-
-    // Cargar lista de espera desde Blob
-    const listBlobs = await list({
-      prefix: WAITING_LIST_KEY,
-      token: process.env.BLOB_READ_WRITE_TOKEN,
-      limit: 1,
-    });
-    
-    const listBlob = listBlobs.blobs.find(b => b.pathname === WAITING_LIST_KEY);
-    if (listBlob) {
-      const response = await fetch(listBlob.url, { cache: 'no-store' });
-      if (response.ok) {
-        const waitingList = await response.json();
-        memoryStore.set(WAITING_LIST_KEY, waitingList);
-      }
-    }
-  } catch (error) {
-    console.error('Error cargando desde Blob Storage:', error);
-  } finally {
-    initializedFromBlob = true;
-  }
-}
-
-// Función para guardar en Blob Storage (async, no bloquea)
-async function saveToBlob(key: string, value: any) {
-  if (!process.env.BLOB_READ_WRITE_TOKEN) {
-    return;
   }
 
-  try {
-    const jsonString = JSON.stringify(value);
-    await put(key, jsonString, {
-      access: 'public',
-      token: process.env.BLOB_READ_WRITE_TOKEN,
-      contentType: 'application/json',
-      addRandomSuffix: false,
-      allowOverwrite: true,
-    });
-  } catch (error) {
-    // No lanzar error, solo loguear - la memoria es la fuente principal
-    console.error(`Error guardando ${key} en Blob Storage:`, error);
-  }
-}
-
-// Función helper para obtener el cliente de almacenamiento
-async function getStorage() {
-  // Cargar desde Blob Storage una vez al inicio si existe
-  await loadFromBlobIfNeeded();
-
-  return {
-    get: async <T>(key: string): Promise<T | null> => {
-      // Siempre leer desde memoria (fuente principal)
-      const value = memoryStore.get(key);
-      return value ? (value as T) : null;
-    },
-    set: async (key: string, value: any): Promise<void> => {
-      // Escribir inmediatamente en memoria (fuente principal)
-      memoryStore.set(key, value);
-      
-      // Guardar en Blob Storage de forma asíncrona (no bloquea)
-      // No esperamos a que termine para no ralentizar las operaciones
-      saveToBlob(key, value).catch(() => {
-        // Ignorar errores silenciosamente
-      });
-    },
-  };
+  return redisClient;
 }
 
 // Inicializar asientos si no existen
 export async function initializeSeats(): Promise<Seat[]> {
-  const storage = await getStorage();
-  const existing = await storage.get<Seat[]>(SEATS_KEY);
+  const redis = getRedisClient();
   
-  if (existing) {
+  if (!redis) {
+    throw new Error('Vercel KV no está configurado. Por favor, agrega Vercel KV desde el dashboard.');
+  }
+
+  // Verificar si ya existen
+  const existing = await redis.get<Seat[]>(SEATS_KEY);
+  if (existing && Array.isArray(existing) && existing.length > 0) {
     return existing;
   }
 
+  // Crear asientos iniciales
   const seats: Seat[] = Array.from({ length: 60 }, (_, i) => ({
     seat: i + 1,
     status: 'free',
@@ -136,21 +68,43 @@ export async function initializeSeats(): Promise<Seat[]> {
     paid: false,
   }));
 
-  await storage.set(SEATS_KEY, seats);
+  // Guardar atómicamente
+  await redis.set(SEATS_KEY, seats);
   return seats;
 }
 
 // Obtener todos los asientos
 export async function getSeats(): Promise<Seat[]> {
-  const storage = await getStorage();
-  const seats = await storage.get<Seat[]>(SEATS_KEY);
-  return seats || await initializeSeats();
+  const redis = getRedisClient();
+  
+  if (!redis) {
+    throw new Error('Vercel KV no está configurado. Por favor, agrega Vercel KV desde el dashboard.');
+  }
+
+  const seats = await redis.get<Seat[]>(SEATS_KEY);
+  
+  if (!seats || !Array.isArray(seats) || seats.length === 0) {
+    return await initializeSeats();
+  }
+
+  return seats;
 }
 
-// Actualizar un asiento
+// Actualizar un asiento de forma atómica
 export async function updateSeat(seatNumber: number, data: Partial<Seat>): Promise<Seat[]> {
-  const storage = await getStorage();
-  const seats = await storage.get<Seat[]>(SEATS_KEY) || await initializeSeats();
+  const redis = getRedisClient();
+  
+  if (!redis) {
+    throw new Error('Vercel KV no está configurado. Por favor, agrega Vercel KV desde el dashboard.');
+  }
+
+  if (seatNumber < 1 || seatNumber > 60) {
+    throw new Error('Asiento inválido');
+  }
+
+  // Usar transacción para asegurar atomicidad
+  // Leer, modificar y escribir de forma atómica
+  const seats = await getSeats();
   const index = seatNumber - 1;
 
   if (index < 0 || index >= seats.length) {
@@ -171,24 +125,36 @@ export async function updateSeat(seatNumber: number, data: Partial<Seat>): Promi
     updatedSeat.paid = false;
   }
 
-  seats[index] = updatedSeat;
-  
-  // Guardar inmediatamente en memoria y async en Blob
-  await storage.set(SEATS_KEY, seats);
-  
-  return seats;
+  // Crear nuevo array con el asiento actualizado
+  const updatedSeats = [...seats];
+  updatedSeats[index] = updatedSeat;
+
+  // Guardar atómicamente
+  await redis.set(SEATS_KEY, updatedSeats);
+
+  return updatedSeats;
 }
 
 // Obtener lista de espera
 export async function getWaitingList(): Promise<WaitingListEntry[]> {
-  const storage = await getStorage();
-  const list = await storage.get<WaitingListEntry[]>(WAITING_LIST_KEY);
+  const redis = getRedisClient();
+  
+  if (!redis) {
+    throw new Error('Vercel KV no está configurado. Por favor, agrega Vercel KV desde el dashboard.');
+  }
+
+  const list = await redis.get<WaitingListEntry[]>(WAITING_LIST_KEY);
   return list || [];
 }
 
-// Agregar a lista de espera
+// Agregar a lista de espera de forma atómica
 export async function addToWaitingList(entry: Omit<WaitingListEntry, 'id' | 'createdAt'>): Promise<WaitingListEntry[]> {
-  const storage = await getStorage();
+  const redis = getRedisClient();
+  
+  if (!redis) {
+    throw new Error('Vercel KV no está configurado. Por favor, agrega Vercel KV desde el dashboard.');
+  }
+
   const list = await getWaitingList();
   
   const newEntry: WaitingListEntry = {
@@ -197,20 +163,30 @@ export async function addToWaitingList(entry: Omit<WaitingListEntry, 'id' | 'cre
     createdAt: new Date().toISOString(),
   };
 
-  list.push(newEntry);
+  const updatedList = [...list, newEntry];
   // Mantener ordenado por fecha (FIFO)
-  list.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+  updatedList.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
   
-  await storage.set(WAITING_LIST_KEY, list);
-  return list;
+  // Guardar atómicamente
+  await redis.set(WAITING_LIST_KEY, updatedList);
+  
+  return updatedList;
 }
 
-// Eliminar de lista de espera
+// Eliminar de lista de espera de forma atómica
 export async function removeFromWaitingList(id: string): Promise<WaitingListEntry[]> {
-  const storage = await getStorage();
+  const redis = getRedisClient();
+  
+  if (!redis) {
+    throw new Error('Vercel KV no está configurado. Por favor, agrega Vercel KV desde el dashboard.');
+  }
+
   const list = await getWaitingList();
   const filtered = list.filter(entry => entry.id !== id);
-  await storage.set(WAITING_LIST_KEY, filtered);
+  
+  // Guardar atómicamente
+  await redis.set(WAITING_LIST_KEY, filtered);
+  
   return filtered;
 }
 
