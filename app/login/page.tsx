@@ -40,12 +40,20 @@ export default function LoginPage() {
   };
 
   return (
-    <div className="flex justify-between items-center mb-6">
-          <h1 className="text-2xl sm:text-3xl font-bold text-gray-800 dark:text-white">
-            GRACIAS POR AYUDAR A LLEVARNOS A BORO
-            HASTA LA PROXIMA :D
-          </h1>
-       </div>
+   <div className="w-full flex justify-center items-center px-4 py-12 bg-gray-900">
+  <h1 className="
+    text-center
+    text-2xl sm:text-3xl md:text-4xl
+    font-extrabold
+    text-white
+    leading-tight
+    max-w-3xl
+  ">
+    GRACIAS POR AYUDAR A LLEVARNOS A BORO
+    <br className="hidden sm:block" />
+    HASTA LA PRÓXIMA :D
+  </h1>
+</div>
     /*<div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-500 to-purple-600 dark:from-gray-900 dark:to-gray-800 p-4">
       <div className="bg-white dark:bg-gray-800 p-6 sm:p-8 rounded-lg shadow-xl w-full max-w-md">
         <div className="flex justify-between items-center mb-6">
