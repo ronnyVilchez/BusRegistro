@@ -135,9 +135,24 @@ export default function HomePage() {
   }
 
   return (
-    <div>
-      s
-    </div>
+    <div className="min-h-screen flex items-center justify-center bg-gray-950 px-4">
+  <h1
+    className="
+      text-center
+      text-3xl sm:text-4xl md:text-5xl
+      font-black
+      text-white
+      tracking-wide
+      leading-tight
+      max-w-4xl
+      drop-shadow-lg
+    "
+  >
+    GRACIAS POR AYUDAR A LLEVARNOS A BORO
+    <br className="hidden sm:block" />
+    HASTA LA PRÓXIMA LIDERES :D
+  </h1>
+</div>
    /* <div className="min-h-screen bg-gray-50 dark:bg-gray-900 transition-colors">
       <header className="bg-white dark:bg-gray-800 shadow-sm border-b border-gray-200 dark:border-gray-700">
         <div className="max-w-7xl mx-auto px-4 py-4 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
