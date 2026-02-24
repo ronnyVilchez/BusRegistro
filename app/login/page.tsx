@@ -40,7 +40,13 @@ export default function LoginPage() {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-500 to-purple-600 dark:from-gray-900 dark:to-gray-800 p-4">
+    <div className="flex justify-between items-center mb-6">
+          <h1 className="text-2xl sm:text-3xl font-bold text-gray-800 dark:text-white">
+            GRACIAS POR AYUDAR A LLEVARNOS A BORO
+            HASTA LA PROXIMA :D
+          </h1>
+       </div>
+    /*<div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-500 to-purple-600 dark:from-gray-900 dark:to-gray-800 p-4">
       <div className="bg-white dark:bg-gray-800 p-6 sm:p-8 rounded-lg shadow-xl w-full max-w-md">
         <div className="flex justify-between items-center mb-6">
           <h1 className="text-2xl sm:text-3xl font-bold text-gray-800 dark:text-white">
@@ -97,6 +103,6 @@ export default function LoginPage() {
           </button>
         </form>
       </div>
-    </div>
+    </div>*/
   );
 }
